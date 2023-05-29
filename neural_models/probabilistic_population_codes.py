@@ -133,7 +133,17 @@ class NumPyPPCs(ProbabilisticPopulationCodes):
             ####
 
             # centers of mass
-            return samples@self.lattice_PDs.T/total_spike_counts
+            xhat = samples@self.lattice_PDs.T/total_spike_counts
+
+            # scale back from [0, 1] space into the data space
+            return rescale(
+                xhat,
+                [self.margin]*len(self.nums_units_per_dimension),
+                [self.margin + 1.0]*len(self.nums_units_per_dimension),
+                np.array(self.stimulus_limits)[0, :],
+                np.array(self.stimulus_limits)[1, :],
+            )
+
         else:
             raise NotImplementedError('Oops, haven''t done this yet -- jgm')
 
@@ -368,7 +378,7 @@ class LTIPPCs:
         self.gains = None
 
         # Ns
-        num_dims =  len(nums_units_per_dimension)
+        num_dims = len(nums_units_per_dimension)
         num_states = 2*num_dims  # second-order dynamics
 
         # state-space parameters
@@ -382,8 +392,8 @@ class LTIPPCs:
         self.C[:num_dims, :num_dims] = np.eye(num_dims)
 
         # transition noise
-        variance_pos = 5e-7;
-        variance_vel = 5e-5;
+        variance_pos = 5e-7
+        variance_vel = 5e-5
         self.transition_covariance  = np.block([
             [variance_pos*np.eye(num_dims), np.zeros(num_dims)],
             [np.zeros(num_dims), variance_vel*np.eye(num_dims)]
@@ -418,7 +428,7 @@ class LTIPPCs:
             num_trajectories, self.velocity0_mean, self.velocity0_covariance,
             self.xmin[-num_states//2:], self.xmax[-num_states//2:], 0.05
         )
-        X[0, :,:] = np.block([[pos0], [vel0]])
+        X[0, :, :] = np.block([[pos0], [vel0]])
 
         # pre-compute transition noise
         transition_std = np.linalg.cholesky(self.transition_covariance)
