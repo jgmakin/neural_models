@@ -153,14 +153,15 @@ class NumPyPPCs(ProbabilisticPopulationCodes):
             # deal with torus stimuli here
             ####
 
-            # centers of mass, replacing bad ones (NaNs) with random good ones
+            # centers of mass
             xhat = samples@self.lattice_PDs.T/total_spike_counts
+
+            # replace bad CoM with random good ones
             if len(bad_inds[0]):
                 replacement_inds = rng.integers(
                     0, high=len(good_inds[0]), size=len(bad_inds[0])
                 )
-                xhat[bad_inds] = xhat[replacement_inds]
-            
+                xhat[bad_inds] = xhat[replacement_inds]            
 
             # scale back from [0, 1] space into the data space
             xhat = rescale(
@@ -426,7 +427,7 @@ class LTIPPCs:
         # probabilistic population code
         self.position_PPC = NumPyPPCs(
             stimulus_limits=np.block([[xmin[:num_dims]], [xmax[:num_dims]]]),
-            nums_units_per_dimension=nums_units_per_dimension,
+            nums_units_per_dimension=nums_units_per_dimension, WRAP=True
         )
 
     def generate_latents(self, num_trajectories, T=4000):
