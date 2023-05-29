@@ -144,15 +144,23 @@ class NumPyPPCs(ProbabilisticPopulationCodes):
 
         if self.tuning_curve_shape == 'Gaussian':
 
-            # ...
+            # get total spike counts, noting where 0
             total_spike_counts = np.sum(samples, axis=1, keepdims=True)
+            bad_inds = np.nonzero(total_spike_counts == 0)
+            good_inds = np.nonzero(total_spike_counts > 0)
 
             ####
             # deal with torus stimuli here
             ####
 
-            # centers of mass
+            # centers of mass, replacing bad ones (NaNs) with random good ones
             xhat = samples@self.lattice_PDs.T/total_spike_counts
+            if len(bad_inds[0]):
+                replacement_inds = rng.integers(
+                    0, high=len(good_inds[0]), size=len(bad_inds[0])
+                )
+                xhat[bad_inds] = xhat[replacement_inds]
+            
 
             # scale back from [0, 1] space into the data space
             xhat = rescale(
@@ -466,12 +474,9 @@ class LTIPPCs:
         num_populations = 1  ### hard-coded
         
         # response of probabilistic population codes
-        ######
-        # this works??
-        stimuli = (self.latent_state@self.C.T).reshape([-1, num_obsvs])
-        ######
+        stimuli = self.latent_state@self.C.T
         vis = self.position_PPC.stimuli_to_samples(
-            stimuli=stimuli,
+            stimuli=stimuli.reshape([-1, num_obsvs]),
             gains=self.gains.reshape([num_trajectories*T, num_populations])
         )
 
