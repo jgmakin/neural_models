@@ -125,7 +125,26 @@ class NumPyPPCs(ProbabilisticPopulationCodes):
             raise NotImplementedError('Oops, haven''t done this yet -- jgm')
 
     def samples_to_estimates(self, samples):
+        '''
+        samples are expected to be 
+            [num_trajectories x T x units1 x units2 x ...],
+        or 
+            [num_examples x units1 x units2 x ...],
+        '''
+
+        # Ns
+        num_dims = len(self.nums_units_per_dimension)
+        original_shape = samples.shape
+
+        # collapse across dimensions (if it's multidimensional)
+        samples = samples.reshape([*samples.shape[:-num_dims], -1])
+
+        # collapse across time (if it's a sequence)
+        samples = samples.reshape([-1, samples.shape[-1]])
+
         if self.tuning_curve_shape == 'Gaussian':
+
+            # ...
             total_spike_counts = np.sum(samples, axis=1, keepdims=True)
 
             ####
@@ -136,13 +155,22 @@ class NumPyPPCs(ProbabilisticPopulationCodes):
             xhat = samples@self.lattice_PDs.T/total_spike_counts
 
             # scale back from [0, 1] space into the data space
-            return rescale(
+            xhat = rescale(
                 xhat,
                 [self.margin]*len(self.nums_units_per_dimension),
                 [self.margin + 1.0]*len(self.nums_units_per_dimension),
+                ###################
+                # is this brittle?
                 np.array(self.stimulus_limits)[0, :],
                 np.array(self.stimulus_limits)[1, :],
+                ###################
             )
+
+            # restore dimensions to
+            #     [num_trajectories x T x num_dims],
+            # or 
+            #     [num_examples x num_dims],
+            return xhat.reshape([*original_shape[:-num_dims], num_dims])
 
         else:
             raise NotImplementedError('Oops, haven''t done this yet -- jgm')
@@ -224,6 +252,7 @@ class TensorFlowPPCs(ProbabilisticPopulationCodes):
             raise NotImplementedError('Oops, haven''t done this yet -- jgm')
 
     def samples_to_estimates(self, samples):
+
         if self.tuning_curve_shape == 'Gaussian':
             total_spike_counts = tf.reduce_sum(samples, axis=1, keepdims=True)
 
@@ -255,26 +284,6 @@ def split_populations(data_matrix, PPCs):
         return tf.split(data_matrix, split_indices, axis=1)
     else:
         raise TypeError('Input stimuli are of unexpected type! -- jgm')
-
-
-# @tfmpl.figure_tensor
-# def plot_populations(data_vector, PPCs):
-#     '''Thing'''
-
-#     vectors = split_populations(data_vector, PPCs)
-#     populations = [PPC.grid_shape(vector) for vector, PPC in zip(vectors, PPCs)]
-
-#     # input_data
-#     figs = tfmpl.create_figures(len(populations), figsize=(2, 2))
-#     for fig, population in zip(figs, populations):
-#         ax = fig.add_subplot(111)
-#         ax.axis('off')
-#         ax.imshow(population[0])
-#         fig.tight_layout()
-
-#     return figs
-
-
 
 
 class MultisensoryPPCs:
@@ -358,8 +367,6 @@ class MultisensoryPPCs:
         )
 
 
-
-
 class LTIPPCs:
     def __init__(
         self,
@@ -394,7 +401,7 @@ class LTIPPCs:
         # transition noise
         variance_pos = 5e-7
         variance_vel = 5e-5
-        self.transition_covariance  = np.block([
+        self.transition_covariance = np.block([
             [variance_pos*np.eye(num_dims), np.zeros(num_dims)],
             [np.zeros(num_dims), variance_vel*np.eye(num_dims)]
         ])
@@ -414,12 +421,11 @@ class LTIPPCs:
             nums_units_per_dimension=nums_units_per_dimension,
         )
 
-
     def generate_latents(self, num_trajectories, T=4000):
 
         # initialize
         num_states = self.A.shape[0]
-        X = np.zeros([T, num_states, num_trajectories])
+        state = np.zeros([T, num_states, num_trajectories])
         pos0 = UniformNormalDiracSampler(
             num_trajectories, self.position0_mean, self.position0_covariance,
             self.xmin[:num_states//2], self.xmax[:num_states//2], 0.05
@@ -428,7 +434,7 @@ class LTIPPCs:
             num_trajectories, self.velocity0_mean, self.velocity0_covariance,
             self.xmin[-num_states//2:], self.xmax[-num_states//2:], 0.05
         )
-        X[0, :, :] = np.block([[pos0], [vel0]])
+        state[0, :, :] = np.block([[pos0], [vel0]])
 
         # pre-compute transition noise
         transition_std = np.linalg.cholesky(self.transition_covariance)
@@ -439,8 +445,8 @@ class LTIPPCs:
 
         # iterate
         for t in range(T-1):
-            X[t+1,:,:] = self.A@X[t,:,:] + transition_noise[t,:,:]
-        self.latent_state = X
+            state[t+1, :, :] = self.A@state[t, :, :] + transition_noise[t, :, :]
+        self.latent_state = np.transpose(state, [2, 0, 1])
 
         # generate random population gains
         num_populations = 1  ### hard coded
@@ -456,29 +462,32 @@ class LTIPPCs:
 
         # Ns
         num_obsvs = self.C.shape[0]
+        num_trajectories, T, num_states = self.latent_state.shape
         num_populations = 1  ### hard-coded
         
         # response of probabilistic population codes
-        stimuli = (
-            np.transpose(self.latent_state, [2, 0, 1])@self.C.T
-        ).reshape([-1, num_obsvs])
+        ######
+        # this works??
+        stimuli = (self.latent_state@self.C.T).reshape([-1, num_obsvs])
+        ######
         vis = self.position_PPC.stimuli_to_samples(
             stimuli=stimuli,
-            gains=self.gains.reshape([-1, num_populations])
+            gains=self.gains.reshape([num_trajectories*T, num_populations])
         )
 
-        return vis
+        # separate out trajectories
+        return vis.reshape([num_trajectories, T, -1])
 
     def get_data(self, num_trajectories=10, T=4000):
         '''
-        For use with training models (data are flattened and concatenated together)
+        For use with training models.  Data have shape
+
         '''
 
         self.generate_latents(num_trajectories, T)
         vis = self.generate_patents()
 
-        # reshape and return
-        return vis.reshape([num_trajectories, -1, vis.shape[1]])
+        return vis
 
 
 def UniformNormalDiracSampler(num_samples, mu, Sigma, xmin, xmax, margin):
@@ -495,7 +504,7 @@ def UniformNormalDiracSampler(num_samples, mu, Sigma, xmin, xmax, margin):
             rng.uniform(size=(num_samples, num_dims)),
             [0]*num_dims, [1]*num_dims, xmin + margin, xmax - margin
         ).T
-    elif Sigma.sum() ==  0:
+    elif Sigma.sum() == 0:
         # infinite precision; sample from a Dirac delta
         X = np.tile(np.reshape(mu, [-1, 1]), [1, num_samples])
     else:    
@@ -577,3 +586,20 @@ def multisensory_integration_data_generator(
     return dataset, joint_angles_PPC, position_PPC
 
 
+
+# @tfmpl.figure_tensor
+# def plot_populations(data_vector, PPCs):
+#     '''Thing'''
+
+#     vectors = split_populations(data_vector, PPCs)
+#     populations = [PPC.grid_shape(vector) for vector, PPC in zip(vectors, PPCs)]
+
+#     # input_data
+#     figs = tfmpl.create_figures(len(populations), figsize=(2, 2))
+#     for fig, population in zip(figs, populations):
+#         ax = fig.add_subplot(111)
+#         ax.axis('off')
+#         ax.imshow(population[0])
+#         fig.tight_layout()
+
+#     return figs
