@@ -15,7 +15,6 @@ dependencies = [
     "numpy",
     "matplotlib",
     "utils-jgm @ git+https://github.com/jgmakin/utils-jgm.git",
-
 ]
 
 # [project.urls]
