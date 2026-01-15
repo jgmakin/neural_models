@@ -33,6 +33,14 @@ except ModuleNotFoundError:
     print('WARNING: torch missing; skipping')
 
 
+##################################################
+# TO DO
+#
+# (1) What's the "right" conv?  Padded? Valid?  Etc....
+#   --it seems like padded should be fine for multisensory data...
+##################################################
+
+
 class ProbabilisticPopulationCodes:
 
     @auto_attribute
@@ -442,7 +450,7 @@ class NumPyMultisensoryData(MultisensoryData):
             #  consistency with the FLAT=False case below.  But that rules out
             #  having populations of different shapes and sizes.
             return np.concatenate((
-                R.reshape([R.shape[0], -1]) for R in response_list
+                R.reshape([R.shape[0], -1, 1, 1]) for R in response_list
             ), axis=1)
         else:
             # stack population responses along a new dimension (dim=1)
@@ -515,9 +523,10 @@ class TorchMultisensoryData(MultisensoryData):
             # It's tempting to stack the populations and then flatten, for
             #  consistency with the FLAT=False case below.  But that rules out
             #  having populations of different shapes and sizes.
-            return torch.concatenate(tuple(
-                R.reshape([R.shape[0], -1]) for R in response_list
+            data = torch.concatenate(tuple(
+                R.reshape([R.shape[0], -1, 1, 1]) for R in response_list
             ), axis=1)
+            return data
         else:
             # stack population responses along a new dimension (dim=1)
             # I.e., treat each population as a "channel," i.e. an N x N array.
@@ -540,50 +549,50 @@ class TorchMultisensoryData(MultisensoryData):
         
 
 class MultisensoryDataset(IterableDataset):
-    def __init__(self, N_examples_per_batch, h, w, CONV=False):
+    def __init__(self, N_examples_per_batch, h, w, FLAT_DATA=True):
         super().__init__()
 
         self.N_examples_per_batch = N_examples_per_batch
         self.multisensory_data = TorchMultisensoryData(
             nums_units_per_dimension=[h, w],
         )
-        self.CONV = CONV
+        self.FLAT_DATA = FLAT_DATA
 
     def __iter__(self):
         # This loop makes it infinite
         while True:
             V0 = self.multisensory_data.get_observed_data(
-                self.N_examples_per_batch, FLAT=(not self.CONV)
+                self.N_examples_per_batch, FLAT=self.FLAT_DATA
             )
             label = None
 
             yield V0, label
 
 
-class EFHtester():
-    def __init__(self, N_examples_per_batch, h, w, CONV=False):
+class DBNtester():
+    def __init__(
+        self, N_examples_per_batch, N_units_x, N_units_y, FLAT_DATA=True
+    ):
         self.N_examples_per_batch = N_examples_per_batch
         self.multisensory_data = TorchMultisensoryData(
-            nums_units_per_dimension=[h, w],
+            nums_units_per_dimension=[N_units_x, N_units_y],
         )
         self.nums_units_per_pop = [
             np.prod(PPC.nums_units_per_dimension)
             for PPC in self.multisensory_data.PPCs.values()
         ]
-        self.CONV = CONV
+        self.FLAT_DATA = FLAT_DATA
 
     @torch.no_grad()
-    def __call__(self, efh, step, VERBOSE=False):
-        FLAT = not self.CONV
+    def __call__(self, model, step, VERBOSE=False):
         Y0 = self.multisensory_data.get_observed_data(
-            num_examples=self.N_examples_per_batch, FLAT=FLAT
+            num_examples=self.N_examples_per_batch, FLAT=self.FLAT_DATA
         )
 
         # deterministic up-down through model
-        mu_hid, _ = efh.infer(Y0)
-        Y1, _ = efh.emit(mu_hid)
+        Y1 = model.updown(Y0, USE_MEANS=True)
         Y1_split = self.multisensory_data.split_populations(
-            Y1, self.nums_units_per_pop, FLAT=FLAT
+            Y1, self.nums_units_per_pop, FLAT=self.FLAT_DATA
         )
 
         # test
@@ -654,37 +663,33 @@ class EFHtester():
         return error_lengths
 
     @torch.no_grad()
-    def plot_updated(self, efh):
-        FLAT = not self.CONV
-
-        Y0 = self.multisensory_data.get_observed_data(1, FLAT)
-        mu_hid, _ = efh.infer(Y0)
-        Y1, _ = efh.emit(mu_hid)
+    def plot_updated(self, model):
+        Y0 = self.multisensory_data.get_observed_data(1, FLAT=self.FLAT_DATA)
+        Y1 = model.updown(Y0, USE_MEANS=True)
 
         # cols=2 because we need a col for Y0 and a col for Y1
         fig, AXES = plt.subplots(len(self.multisensory_data.PPCs), 2)
+        title = 'initial '
         for iGibbs, Y in enumerate([Y0, Y1]):
             Y_list = self.multisensory_data.split_populations(
-                Y, self.nums_units_per_pop, FLAT=FLAT
+                Y, self.nums_units_per_pop, FLAT=self.FLAT_DATA
             )
             for iPop, (PPC, response) in enumerate(zip(
                 self.multisensory_data.PPCs.values(), Y_list
             )):
                 # does nothing if already in grid_shape
                 response = PPC.grid_shape(response)
-                AXES[iPop, iGibbs].imshow(response[0].cpu().detach())
+                ax = AXES[iPop, iGibbs]
+                ax.imshow(response[0].cpu().detach())
+                ax.set_title(title + PPC.name)
+                ax.set_axis_off()
+            title = 'updated '
 
     @torch.no_grad()
-    def plot_generated(self, efh, N_CD_steps, H, W, num_examples):
-        FLAT = not self.CONV
-
-        if self.CONV:
-            Yhats = efh.generate(N_CD_steps, num_examples, H, W)
-        else:
-            Yhats = efh.generate(N_CD_steps, num_examples)
-
+    def plot_generated(self, model, N_CD_steps, H, W, num_examples):
+        Yhats = model.generate(N_CD_steps, num_examples, H, W)
         Yhat_list = self.multisensory_data.split_populations(
-            Yhats, self.nums_units_per_pop, FLAT=FLAT
+            Yhats, self.nums_units_per_pop, FLAT=self.FLAT_DATA
         )
 
         # a row for each population
@@ -695,8 +700,10 @@ class EFHtester():
             # does nothing if already in grid_shape
             Yhat = PPC.grid_shape(Yhat)
             for iExample, yhat in enumerate(Yhat):
-                AXES[iPop, iExample].imshow(yhat.cpu().detach())
-
+                ax = AXES[iPop, iExample]
+                ax.imshow(yhat.cpu().detach())
+                ax.set_axis_off()
+    
 
 # helper functions
 def errors_to_error_size(E):
